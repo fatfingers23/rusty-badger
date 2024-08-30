@@ -108,6 +108,7 @@ embedded-text = "0.7.0"
 debug = 2
 
 [profile.dev]
+debug = 1
 lto = true
 opt-level = "z"
 
