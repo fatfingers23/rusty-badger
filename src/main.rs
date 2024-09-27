@@ -4,18 +4,20 @@
 
 #![no_std]
 #![no_main]
-use control_driver::setup_cyw43;
+use core::sync::atomic::AtomicU32;
+
+use cyw43_driver::setup_cyw43;
 use defmt::info;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::Spawner;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
+use embassy_rp::peripherals::SPI0;
 use embassy_rp::spi::Spi;
 use embassy_rp::spi::{self};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Delay, Duration, Timer};
-use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::primitives::PrimitiveStyleBuilder;
 use embedded_graphics::text::Text;
 use embedded_graphics::{
@@ -31,11 +33,15 @@ use embedded_text::{
 };
 use gpio::{Level, Output, Pull};
 use heapless::String;
+use static_cell::StaticCell;
 use uc8151::asynch::Uc8151;
+use uc8151::LUT;
 use uc8151::WIDTH;
-use uc8151::{UpdateRegion, LUT};
 use {defmt_rtt as _, panic_probe as _};
-mod control_driver;
+mod cyw43_driver;
+
+type Spi0Bus = Mutex<NoopRawMutex, Spi<'static, SPI0, spi::Async>>;
+static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -44,6 +50,8 @@ async fn main(spawner: Spawner) {
         p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, spawner,
     )
     .await;
+
+    // let input = gpio::Input::new(p.PIN_29, gpio::Pull::Up);
 
     let miso = p.PIN_16;
     let mosi = p.PIN_19;
@@ -82,8 +90,25 @@ async fn main(spawner: Spawner) {
         p.DMA_CH2,
         spi::Config::default(),
     );
-    let spi_bus: Mutex<NoopRawMutex, _> = Mutex::new(spi);
+    // let spi_bus: Mutex<NoopRawMutex, _> = Mutex::new(spi);
+    static SPI_BUS: StaticCell<Spi0Bus> = StaticCell::new();
+    let spi_bus = SPI_BUS.init(Mutex::new(spi));
+
+    info!("led on!");
+    control.gpio_set(0, true).await;
+    spawner.must_spawn(run_the_display(spi_bus, cs, dc, busy, reset));
+}
+
+#[embassy_executor::task]
+async fn run_the_display(
+    spi_bus: &'static Spi0Bus,
+    cs: Output<'static>,
+    dc: Output<'static>,
+    busy: Input<'static>,
+    reset: Output<'static>,
+) {
     let spi_dev = SpiDevice::new(&spi_bus, cs);
+
     let mut display = Uc8151::new(spi_dev, dc, busy, reset, Delay);
 
     display.reset().await;
@@ -115,20 +140,11 @@ async fn main(spawner: Spawner) {
 
     let _ = display.update().await;
 
-    let delay: Duration = Duration::from_secs(1);
-    let mut count = 0;
+    let delay: Duration = Duration::from_secs(30);
     let mut text: String<16> = String::<16>::new();
 
     loop {
-        info!("led on!");
-        control.gpio_set(0, true).await;
-        Timer::after(delay).await;
-
-        info!("led off!");
-        control.gpio_set(0, false).await;
-
-        Timer::after(delay).await;
-
+        let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
         let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
         let count_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
         count_bounds
@@ -159,7 +175,8 @@ async fn main(spawner: Spawner) {
         text.clear();
         // let _ = display.clear(Rgb565::WHITE.into());
         // let _ = display.update().await;
-        count += 1;
-        // Timer::after(Duration::from_secs(10)).await;
+        WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
+
+        Timer::after(delay).await;
     }
 }

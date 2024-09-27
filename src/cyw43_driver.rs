@@ -47,6 +47,7 @@ pub async fn setup_cyw43<'a>(
     let cs = Output::new(p_25, Level::High);
     let mut pio = Pio::new(pio0, Irqs);
     let spi = PioSpi::new(&mut pio.common, pio.sm0, pio.irq0, cs, p_24, p_29, dma_ch0);
+    // let input = Input::new(p_29, Pull::Up);
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
