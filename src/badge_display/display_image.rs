@@ -2,12 +2,11 @@ use core::sync::atomic::{AtomicBool, AtomicU8};
 
 use embedded_graphics::prelude::Point;
 
-pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
-pub static CHANGE_IMAGE: AtomicBool = AtomicBool::new(true);
+use super::CURRENT_IMAGE;
 
 static NUMBER_OF_IMAGES: u8 = 2;
-static FERRIS_IMG: &[u8; 15722] = include_bytes!("../images/ferris_w_a_knife.bmp");
-static REPO_IMG: &[u8; 11262] = include_bytes!("../images/repo.bmp");
+static FERRIS_IMG: &[u8; 15722] = include_bytes!("../../images/ferris_w_a_knife.bmp");
+static REPO_IMG: &[u8; 11262] = include_bytes!("../../images/repo.bmp");
 
 pub enum DisplayImage {
     Ferris = 0,

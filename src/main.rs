@@ -4,9 +4,9 @@
 
 #![no_std]
 #![no_main]
-use core::sync::atomic::AtomicU32;
+use badge_display::display_image::DisplayImage;
+use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE};
 use defmt::info;
-use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::Spawner;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
@@ -29,21 +29,13 @@ use embedded_text::{
     TextBox,
 };
 use gpio::{Level, Output, Pull};
-use heapless::String;
-use image_handler::{get_current_image, DisplayImage, CHANGE_IMAGE, CURRENT_IMAGE};
 use static_cell::StaticCell;
-use tinybmp::Bmp;
-use uc8151::asynch::Uc8151;
-use uc8151::LUT;
-use uc8151::WIDTH;
 use {defmt_rtt as _, panic_probe as _};
 
+mod badge_display;
 mod cyw43_driver;
-mod image_handler;
 
 type Spi0Bus = Mutex<NoopRawMutex, Spi<'static, SPI0, spi::Async>>;
-
-static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -109,109 +101,5 @@ async fn main(spawner: Spawner) {
             continue;
         }
         Timer::after(Duration::from_millis(100)).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn run_the_display(
-    spi_bus: &'static Spi0Bus,
-    cs: Output<'static>,
-    dc: Output<'static>,
-    busy: Input<'static>,
-    reset: Output<'static>,
-) {
-    let spi_dev = SpiDevice::new(&spi_bus, cs);
-
-    let mut display = Uc8151::new(spi_dev, dc, busy, reset, Delay);
-
-    display.reset().await;
-
-    // Initialise display. Using the default LUT speed setting
-    let _ = display.setup(LUT::Fast).await;
-
-    // Note we're setting the Text color to `Off`. The driver is set up to treat Off as Black so that BMPs work as expected.
-    let character_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::Off);
-    let textbox_style = TextBoxStyleBuilder::new()
-        .height_mode(HeightMode::FitToText)
-        .alignment(HorizontalAlignment::Left)
-        .paragraph_spacing(6)
-        .build();
-
-    // Bounding box for our text. Fill it with the opposite color so we can read the text.
-    let name_and_detail_bounds = Rectangle::new(Point::new(0, 40), Size::new(WIDTH - 75, 0));
-    name_and_detail_bounds
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(&mut display)
-        .unwrap();
-
-    // Create the text box and apply styling options.
-
-    let text = "Bailey Townsend\nSoftware Dev";
-    // \nWritten in rust\nRunning on a pico w";
-    let name_and_detail_box =
-        TextBox::with_textbox_style(text, name_and_detail_bounds, character_style, textbox_style);
-
-    // Draw the text box.
-    name_and_detail_box.draw(&mut display).unwrap();
-
-    let _ = display.update().await;
-
-    let delay: Duration = Duration::from_secs(30);
-    let mut text: String<16> = String::<16>::new();
-
-    loop {
-        let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-        // let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
-        // let count_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
-        // count_bounds
-        //     .into_styled(
-        //         PrimitiveStyleBuilder::default()
-        //             .stroke_color(BinaryColor::Off)
-        //             .fill_color(BinaryColor::On)
-        //             .stroke_width(1)
-        //             .build(),
-        //     )
-        //     .draw(&mut display)
-        //     .unwrap();
-
-        // Text::new(text.as_str(), Point::new(8, 16), character_style)
-        //     .draw(&mut display)
-        //     .unwrap();
-
-        // // // Draw the text box.
-        // let result = display
-        //     .partial_update(count_bounds.try_into().unwrap())
-        //     .await;
-        // match result {
-        //     Ok(_) => {}
-        //     Err(_) => {
-        //         info!("Error updating display");
-        //     }
-        // }
-        // text.clear();
-        // let _ = display.clear(Rgb565::WHITE.into());
-        // let _ = display.update().await;
-        WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
-
-        if CHANGE_IMAGE.load(core::sync::atomic::Ordering::Relaxed) {
-            let current_image = get_current_image();
-            let tga: Bmp<BinaryColor> = Bmp::from_slice(&current_image.image()).unwrap();
-            let image = Image::new(&tga, current_image.image_location());
-            //clear image location by writing a white rectangle over previous image location
-            let clear_bounds = Rectangle::new(
-                current_image.previous().image_location(),
-                Size::new(157, 91),
-            );
-            clear_bounds
-                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(&mut display)
-                .unwrap();
-
-            let _ = image.draw(&mut display);
-            let _ = display.update().await;
-            CHANGE_IMAGE.store(false, core::sync::atomic::Ordering::Relaxed);
-        }
-
-        Timer::after(Duration::from_millis(500)).await;
     }
 }
