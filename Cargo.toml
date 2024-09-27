@@ -104,6 +104,7 @@ uc8151 = { git = "https://github.com/9names/uc8151-rs.git", features = [
 ] }
 embedded-text = "0.7.0"
 tinybmp = "0.5.0"
+shtcx = "1.0.0"
 
 [profile.release]
 debug = 2

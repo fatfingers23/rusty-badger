@@ -4,7 +4,6 @@ use core::{
     cell::RefCell,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU8},
 };
-use cortex_m::interrupt::CriticalSection;
 use defmt::*;
 use display_image::get_current_image;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
@@ -42,10 +41,10 @@ use crate::{env::env_value, helpers::easy_format, Spi0Bus};
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
 pub static CHANGE_IMAGE: AtomicBool = AtomicBool::new(true);
 pub static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
-
 pub static RTC_TIME_STRING: blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<String<8>>> =
     blocking_mutex::Mutex::new(RefCell::new(String::<8>::new()));
-
+pub static TEMP: AtomicU8 = AtomicU8::new(0);
+pub static HUMIDITY: AtomicU8 = AtomicU8::new(0);
 pub static HOUR: AtomicU8 = AtomicU8::new(10);
 pub static MINUTE: AtomicU8 = AtomicU8::new(57);
 pub static SECOND: AtomicU8 = AtomicU8::new(0);
@@ -122,9 +121,12 @@ pub async fn run_the_display(
         //Runs every 30 cycles/15 seconds and first run
         if cycles_since_last_clear % 30 == 0 || first_run {
             let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-            let count_text: String<16> = easy_format::<16>(format_args!("Count: {}", count));
-            let count_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
-            count_bounds
+            let temp = TEMP.load(core::sync::atomic::Ordering::Relaxed);
+            let humidity = HUMIDITY.load(core::sync::atomic::Ordering::Relaxed);
+            let top_text: String<64> =
+                easy_format::<64>(format_args!("{}F {}% Count: {}", temp, humidity, count));
+            let top_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
+            top_bounds
                 .into_styled(
                     PrimitiveStyleBuilder::default()
                         .stroke_color(BinaryColor::Off)
@@ -135,22 +137,19 @@ pub async fn run_the_display(
                 .draw(&mut display)
                 .unwrap();
 
-            Text::new(count_text.as_str(), Point::new(8, 16), character_style)
+            Text::new(top_text.as_str(), Point::new(8, 16), character_style)
                 .draw(&mut display)
                 .unwrap();
 
-            // // Draw the text box.
-            let result = display
-                .partial_update(count_bounds.try_into().unwrap())
-                .await;
+            // Draw the text box.
+            let result = display.partial_update(top_bounds.try_into().unwrap()).await;
             match result {
                 Ok(_) => {}
                 Err(_) => {
                     info!("Error updating display");
                 }
             }
-            // let _ = display.clear(Rgb565::WHITE.into());
-            // let _ = display.update().await;
+
             WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
         }
 
@@ -207,7 +206,6 @@ pub async fn run_the_display(
             let tga: Bmp<BinaryColor> = Bmp::from_slice(&current_image.image()).unwrap();
             let image = Image::new(&tga, current_image.image_location());
             //clear image location by writing a white rectangle over previous image location
-            let image_bounds = Size::new(160, 140);
             let clear_rectangle = Rectangle::new(
                 current_image.previous().image_location(),
                 Size::new(157, 101),
@@ -219,8 +217,6 @@ pub async fn run_the_display(
 
             let _ = image.draw(&mut display);
             //TODO need to look up the reginal area display
-            //             let update_region = UpdateRegion::new(192, 32, 160, 144).unwrap();
-            // let result = display.partial_update(update_region).await;
             let _ = display.update().await;
             CHANGE_IMAGE.store(false, core::sync::atomic::Ordering::Relaxed);
         }

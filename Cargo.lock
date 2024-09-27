@@ -906,6 +906,7 @@ dependencies = [
  "reqwless",
  "serde",
  "serde-json-core",
+ "shtcx",
  "smart-leds",
  "st7789",
  "static_cell",
@@ -2130,6 +2131,15 @@ name = "sha2-const-stable"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f179d4e11094a893b82fff208f74d448a7512f99f5a0acbd5c679b705f83ed9"
+
+[[package]]
+name = "shtcx"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c25d66e6c78c6e19160a5b528cebe6f54d5737f091a2b90b08dbd7e63a9269f"
+dependencies = [
+ "embedded-hal 1.0.0",
+]
 
 [[package]]
 name = "siphasher"

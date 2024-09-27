@@ -16,28 +16,18 @@ use embassy_rp::spi::Spi;
 use embassy_rp::spi::{self};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Delay, Duration, Timer};
-use embedded_graphics::{
-    image::Image,
-    mono_font::{ascii::*, MonoTextStyle},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-};
-use embedded_text::{
-    alignment::HorizontalAlignment,
-    style::{HeightMode, TextBoxStyleBuilder},
-    TextBox,
-};
+use embassy_time::{Duration, Timer};
 use gpio::{Level, Output, Pull};
 use helpers::easy_format;
 use static_cell::StaticCell;
+use temp_sensor::run_the_temp_sensor;
 use {defmt_rtt as _, panic_probe as _};
 
 mod badge_display;
 mod cyw43_driver;
 mod env;
 mod helpers;
+mod temp_sensor;
 
 type Spi0Bus = Mutex<NoopRawMutex, Spi<'static, SPI0, spi::Async>>;
 
@@ -73,8 +63,6 @@ async fn main(spawner: Spawner) {
     let _btn_b = Input::new(p.PIN_13, Pull::Down);
     let btn_c = Input::new(p.PIN_14, Pull::Down);
 
-    // let mut btn_c: Debouncer<'_> = Debouncer::new(Input::new(btn_c, Pull::Up), Duration::from_millis(20));
-
     let spi = Spi::new(
         p.SPI0,
         clk,
@@ -84,12 +72,14 @@ async fn main(spawner: Spawner) {
         p.DMA_CH2,
         spi::Config::default(),
     );
-    // let spi_bus: Mutex<NoopRawMutex, _> = Mutex::new(spi);
+
+    //SPI Bus setup to run the e-ink display
     static SPI_BUS: StaticCell<Spi0Bus> = StaticCell::new();
     let spi_bus = SPI_BUS.init(Mutex::new(spi));
 
     info!("led on!");
     // control.gpio_set(0, true).await;
+    spawner.must_spawn(run_the_temp_sensor(p.I2C0, p.PIN_5, p.PIN_4));
     spawner.must_spawn(run_the_display(spi_bus, cs, dc, busy, reset));
 
     //rtc setup
@@ -101,8 +91,8 @@ async fn main(spawner: Spawner) {
             month: 1,
             day: 1,
             day_of_week: DayOfWeek::Saturday,
-            hour: 0,
-            minute: 0,
+            hour: 18,
+            minute: 31,
             second: 0,
         };
         rtc.set_datetime(now).unwrap();
