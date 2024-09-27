@@ -1,5 +1,3 @@
-use core::sync::atomic::{AtomicBool, AtomicU8};
-
 use embedded_graphics::prelude::Point;
 
 use super::CURRENT_IMAGE;

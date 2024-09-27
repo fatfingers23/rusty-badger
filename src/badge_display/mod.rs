@@ -1,6 +1,7 @@
 pub mod display_image;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8};
+use defmt::*;
 use display_image::get_current_image;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_rp::gpio;
@@ -9,9 +10,10 @@ use embassy_time::{Delay, Duration, Timer};
 use embedded_graphics::{
     image::Image,
     mono_font::{ascii::*, MonoTextStyle},
-    pixelcolor::BinaryColor,
+    pixelcolor::{BinaryColor, Rgb565},
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
+    text::Text,
 };
 use embedded_text::{
     alignment::HorizontalAlignment,
@@ -28,10 +30,10 @@ use {defmt_rtt as _, panic_probe as _};
 
 use crate::Spi0Bus;
 
+//Display state
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
 pub static CHANGE_IMAGE: AtomicBool = AtomicBool::new(true);
-
-static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[embassy_executor::task]
 pub async fn run_the_display(
@@ -77,42 +79,48 @@ pub async fn run_the_display(
 
     let _ = display.update().await;
 
-    let delay: Duration = Duration::from_secs(30);
+    let cycle: Duration = Duration::from_millis(500);
+    let mut first_run = true;
     let mut text: String<16> = String::<16>::new();
+    let cycles_to_skip = 30;
+    let mut cycles_since_last_clear = 0;
 
     loop {
-        let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-        // let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
-        // let count_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
-        // count_bounds
-        //     .into_styled(
-        //         PrimitiveStyleBuilder::default()
-        //             .stroke_color(BinaryColor::Off)
-        //             .fill_color(BinaryColor::On)
-        //             .stroke_width(1)
-        //             .build(),
-        //     )
-        //     .draw(&mut display)
-        //     .unwrap();
+        if cycles_since_last_clear >= cycles_to_skip || first_run {
+            let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+            let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
+            let count_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
+            count_bounds
+                .into_styled(
+                    PrimitiveStyleBuilder::default()
+                        .stroke_color(BinaryColor::Off)
+                        .fill_color(BinaryColor::On)
+                        .stroke_width(1)
+                        .build(),
+                )
+                .draw(&mut display)
+                .unwrap();
 
-        // Text::new(text.as_str(), Point::new(8, 16), character_style)
-        //     .draw(&mut display)
-        //     .unwrap();
+            Text::new(text.as_str(), Point::new(8, 16), character_style)
+                .draw(&mut display)
+                .unwrap();
 
-        // // // Draw the text box.
-        // let result = display
-        //     .partial_update(count_bounds.try_into().unwrap())
-        //     .await;
-        // match result {
-        //     Ok(_) => {}
-        //     Err(_) => {
-        //         info!("Error updating display");
-        //     }
-        // }
-        // text.clear();
-        // let _ = display.clear(Rgb565::WHITE.into());
-        // let _ = display.update().await;
-        WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
+            // // Draw the text box.
+            let result = display
+                .partial_update(count_bounds.try_into().unwrap())
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(_) => {
+                    info!("Error updating display");
+                }
+            }
+            text.clear();
+            // let _ = display.clear(Rgb565::WHITE.into());
+            let _ = display.update().await;
+            WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
+            cycles_since_last_clear = 0;
+        }
 
         if CHANGE_IMAGE.load(core::sync::atomic::Ordering::Relaxed) {
             let current_image = get_current_image();
@@ -133,6 +141,8 @@ pub async fn run_the_display(
             CHANGE_IMAGE.store(false, core::sync::atomic::Ordering::Relaxed);
         }
 
-        Timer::after(Duration::from_millis(500)).await;
+        cycles_since_last_clear += 1;
+        first_run = false;
+        Timer::after(cycle).await;
     }
 }
