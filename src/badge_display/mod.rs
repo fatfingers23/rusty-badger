@@ -1,11 +1,19 @@
 pub mod display_image;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8};
+use core::{
+    cell::RefCell,
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU8},
+};
+use cortex_m::interrupt::CriticalSection;
 use defmt::*;
 use display_image::get_current_image;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
+use embassy_sync::{
+    blocking_mutex::{self, raw::CriticalSectionRawMutex},
+    mutex,
+};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_graphics::{
     image::Image,
@@ -34,10 +42,13 @@ use crate::{env::env_value, helpers::easy_format, Spi0Bus};
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
 pub static CHANGE_IMAGE: AtomicBool = AtomicBool::new(true);
 pub static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
+
+pub static RTC_TIME_STRING: blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<String<8>>> =
+    blocking_mutex::Mutex::new(RefCell::new(String::<8>::new()));
+
 pub static HOUR: AtomicU8 = AtomicU8::new(10);
 pub static MINUTE: AtomicU8 = AtomicU8::new(57);
 pub static SECOND: AtomicU8 = AtomicU8::new(0);
-pub static WRITE_NEW_TIME: AtomicBool = AtomicBool::new(true);
 
 #[embassy_executor::task]
 pub async fn run_the_display(
@@ -53,8 +64,8 @@ pub async fn run_the_display(
 
     display.reset().await;
 
-    // Initialise display. Using the default LUT speed setting
-    let _ = display.setup(LUT::Fast).await;
+    // Initialise display with speed
+    let _ = display.setup(LUT::Medium).await;
 
     // Note we're setting the Text color to `Off`. The driver is set up to treat Off as Black so that BMPs work as expected.
     let character_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::Off);
@@ -89,63 +100,29 @@ pub async fn run_the_display(
     // Draw the text box.
     name_and_detail_box.draw(&mut display).unwrap();
 
-    let _ = display.update().await;
+    // let _ = display.update().await;
 
+    //Each cycle is half a second
     let cycle: Duration = Duration::from_millis(500);
+
     let mut first_run = true;
-    let mut text: String<16> = String::<16>::new();
-    let cycles_to_skip = 30;
+    //New start every 120 cycles or 60 seconds
+    let cycles_to_clear_at: i32 = 120;
     let mut cycles_since_last_clear = 0;
 
-    let mut time_text: String<16> = String::<16>::new();
-
     loop {
-        //if cycles are even, update the time values
+        //Timed based display events
+
+        //Runs every second;
         if cycles_since_last_clear % 2 == 0 {
-            update_time_values_from_cycles();
+            // update_time_values_from_cycles();
         }
 
-        if WRITE_NEW_TIME.load(core::sync::atomic::Ordering::Relaxed) {
-            let hour = HOUR.load(core::sync::atomic::Ordering::Relaxed);
-            let minute = MINUTE.load(core::sync::atomic::Ordering::Relaxed);
-            let second = SECOND.load(core::sync::atomic::Ordering::Relaxed);
-
-            let _ = core::fmt::write(
-                &mut time_text,
-                format_args!("{:02}:{:02}:{:02}", hour, minute, second),
-            );
-
-            let time_bounds = Rectangle::new(Point::new(0, 24), Size::new(WIDTH, 16));
-            time_bounds
-                .into_styled(
-                    PrimitiveStyleBuilder::default()
-                        .stroke_color(BinaryColor::Off)
-                        .fill_color(BinaryColor::On)
-                        .stroke_width(1)
-                        .build(),
-                )
-                .draw(&mut display)
-                .unwrap();
-
-            Text::new(time_text.as_str(), Point::new(8, 32), character_style)
-                .draw(&mut display)
-                .unwrap();
-
-            let result = display
-                .partial_update(time_bounds.try_into().unwrap())
-                .await;
-            match result {
-                Ok(_) => {}
-                Err(_) => {
-                    info!("Error updating display");
-                }
-            }
-            WRITE_NEW_TIME.store(false, core::sync::atomic::Ordering::Relaxed);
-        }
-
-        if cycles_since_last_clear >= cycles_to_skip || first_run {
+        //Updates the top bar
+        //Runs every 30 cycles/15 seconds and first run
+        if cycles_since_last_clear % 30 == 0 || first_run {
             let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-            let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
+            let count_text: String<16> = easy_format::<16>(format_args!("Count: {}", count));
             let count_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
             count_bounds
                 .into_styled(
@@ -158,7 +135,7 @@ pub async fn run_the_display(
                 .draw(&mut display)
                 .unwrap();
 
-            Text::new(text.as_str(), Point::new(8, 16), character_style)
+            Text::new(count_text.as_str(), Point::new(8, 16), character_style)
                 .draw(&mut display)
                 .unwrap();
 
@@ -172,12 +149,58 @@ pub async fn run_the_display(
                     info!("Error updating display");
                 }
             }
-            text.clear();
             // let _ = display.clear(Rgb565::WHITE.into());
             // let _ = display.update().await;
             WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
-            cycles_since_last_clear = 0;
         }
+
+        //Runs every 120 cycles/60 seconds and first run
+        if cycles_since_last_clear == 0 {
+            let mut time_text: String<8> = String::<8>::new();
+
+            let time_box_rectangle_location = Point::new(0, 96);
+            RTC_TIME_STRING.lock(|x| {
+                time_text.push_str(x.borrow().as_str()).unwrap();
+            });
+
+            //The bounds of the box for time and refresh area
+            let time_bounds = Rectangle::new(time_box_rectangle_location, Size::new(88, 24));
+            time_bounds
+                .into_styled(
+                    PrimitiveStyleBuilder::default()
+                        .stroke_color(BinaryColor::Off)
+                        .fill_color(BinaryColor::On)
+                        .stroke_width(1)
+                        .build(),
+                )
+                .draw(&mut display)
+                .unwrap();
+
+            //Adding a y offset to the box location to fit inside the box
+            Text::new(
+                time_text.as_str(),
+                (
+                    time_box_rectangle_location.x + 8,
+                    time_box_rectangle_location.y + 16,
+                )
+                    .into(),
+                character_style,
+            )
+            .draw(&mut display)
+            .unwrap();
+
+            let result = display
+                .partial_update(time_bounds.try_into().unwrap())
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(_) => {
+                    info!("Error updating display");
+                }
+            }
+        }
+
+        //Manually triggered display events
 
         if CHANGE_IMAGE.load(core::sync::atomic::Ordering::Relaxed) {
             let current_image = get_current_image();
@@ -203,31 +226,11 @@ pub async fn run_the_display(
         }
 
         cycles_since_last_clear += 1;
+        if cycles_since_last_clear >= cycles_to_clear_at {
+            cycles_since_last_clear = 0;
+        }
         first_run = false;
+        // info!("Display Cycle: {}", cycles_since_last_clear);
         Timer::after(cycle).await;
     }
-}
-
-fn update_time_values_from_cycles() {
-    let current_second = SECOND.load(core::sync::atomic::Ordering::Relaxed);
-    let current_minute = MINUTE.load(core::sync::atomic::Ordering::Relaxed);
-    let current_hour = HOUR.load(core::sync::atomic::Ordering::Relaxed);
-
-    let new_second = (current_second + 1) % 60;
-    let new_minute = if new_second == 0 {
-        WRITE_NEW_TIME.store(true, core::sync::atomic::Ordering::Relaxed);
-        (current_minute + 1) % 60
-    } else {
-        current_minute
-    };
-    let new_hour = if new_minute == 0 && new_second == 0 {
-        WRITE_NEW_TIME.store(true, core::sync::atomic::Ordering::Relaxed);
-        (current_hour + 1) % 24
-    } else {
-        current_hour
-    };
-
-    SECOND.store(new_second, core::sync::atomic::Ordering::Relaxed);
-    MINUTE.store(new_minute, core::sync::atomic::Ordering::Relaxed);
-    HOUR.store(new_hour, core::sync::atomic::Ordering::Relaxed);
 }

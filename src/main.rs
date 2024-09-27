@@ -5,12 +5,13 @@
 #![no_std]
 #![no_main]
 use badge_display::display_image::DisplayImage;
-use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE};
+use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE, RTC_TIME_STRING};
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
 use embassy_rp::peripherals::SPI0;
+use embassy_rp::rtc::{DateTime, DayOfWeek};
 use embassy_rp::spi::Spi;
 use embassy_rp::spi::{self};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -29,6 +30,7 @@ use embedded_text::{
     TextBox,
 };
 use gpio::{Level, Output, Pull};
+use helpers::easy_format;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -90,6 +92,22 @@ async fn main(spawner: Spawner) {
     // control.gpio_set(0, true).await;
     spawner.must_spawn(run_the_display(spi_bus, cs, dc, busy, reset));
 
+    //rtc setup
+    let mut rtc = embassy_rp::rtc::Rtc::new(p.RTC);
+    if !rtc.is_running() {
+        info!("Start RTC");
+        let now = DateTime {
+            year: 2000,
+            month: 1,
+            day: 1,
+            day_of_week: DayOfWeek::Saturday,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
+        rtc.set_datetime(now).unwrap();
+    }
+
     //Input loop
     loop {
         //Change Image Button
@@ -102,6 +120,42 @@ async fn main(spawner: Spawner) {
             Timer::after(Duration::from_millis(500)).await;
             continue;
         }
+
+        let now = rtc.now();
+        match now {
+            Ok(time) => set_display_time(time),
+            Err(_) => {
+                info!("Error getting time");
+            }
+        }
+
         Timer::after(Duration::from_millis(100)).await;
     }
+}
+
+fn set_display_time(time: DateTime) {
+    let mut am = true;
+    let twelve_hour = if time.hour > 12 {
+        am = false;
+        time.hour - 12
+    } else if time.hour == 0 {
+        12
+    } else {
+        time.hour
+    };
+
+    let am_pm = if am { "AM" } else { "PM" };
+
+    let formatted_time = easy_format::<8>(format_args!(
+        "{:02}:{:02} {}",
+        twelve_hour, time.minute, am_pm
+    ));
+
+    RTC_TIME_STRING.lock(|rtc_time_string| {
+        rtc_time_string.borrow_mut().clear();
+        rtc_time_string
+            .borrow_mut()
+            .push_str(formatted_time.as_str())
+            .unwrap();
+    });
 }
