@@ -34,6 +34,10 @@ use crate::Spi0Bus;
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
 pub static CHANGE_IMAGE: AtomicBool = AtomicBool::new(true);
 pub static WIFI_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static HOUR: AtomicU8 = AtomicU8::new(10);
+pub static MINUTE: AtomicU8 = AtomicU8::new(57);
+pub static SECOND: AtomicU8 = AtomicU8::new(0);
+pub static WRITE_NEW_TIME: AtomicBool = AtomicBool::new(true);
 
 #[embassy_executor::task]
 pub async fn run_the_display(
@@ -85,9 +89,52 @@ pub async fn run_the_display(
     let cycles_to_skip = 30;
     let mut cycles_since_last_clear = 0;
 
+    let mut time_text: String<16> = String::<16>::new();
+
     loop {
-        //TODO do the clock here need to
-        //1. Find the right time for counting
+        //if cycles are even, update the time values
+        if cycles_since_last_clear % 2 == 0 {
+            update_time_values_from_cycles();
+        }
+
+        if WRITE_NEW_TIME.load(core::sync::atomic::Ordering::Relaxed) {
+            let hour = HOUR.load(core::sync::atomic::Ordering::Relaxed);
+            let minute = MINUTE.load(core::sync::atomic::Ordering::Relaxed);
+            let second = SECOND.load(core::sync::atomic::Ordering::Relaxed);
+
+            let _ = core::fmt::write(
+                &mut time_text,
+                format_args!("{:02}:{:02}:{:02}", hour, minute, second),
+            );
+
+            let time_bounds = Rectangle::new(Point::new(0, 24), Size::new(WIDTH, 16));
+            time_bounds
+                .into_styled(
+                    PrimitiveStyleBuilder::default()
+                        .stroke_color(BinaryColor::Off)
+                        .fill_color(BinaryColor::On)
+                        .stroke_width(1)
+                        .build(),
+                )
+                .draw(&mut display)
+                .unwrap();
+
+            Text::new(time_text.as_str(), Point::new(8, 32), character_style)
+                .draw(&mut display)
+                .unwrap();
+
+            let result = display
+                .partial_update(time_bounds.try_into().unwrap())
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(_) => {
+                    info!("Error updating display");
+                }
+            }
+            WRITE_NEW_TIME.store(false, core::sync::atomic::Ordering::Relaxed);
+        }
+
         if cycles_since_last_clear >= cycles_to_skip || first_run {
             let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
             let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
@@ -151,4 +198,28 @@ pub async fn run_the_display(
         first_run = false;
         Timer::after(cycle).await;
     }
+}
+
+fn update_time_values_from_cycles() {
+    let current_second = SECOND.load(core::sync::atomic::Ordering::Relaxed);
+    let current_minute = MINUTE.load(core::sync::atomic::Ordering::Relaxed);
+    let current_hour = HOUR.load(core::sync::atomic::Ordering::Relaxed);
+
+    let new_second = (current_second + 1) % 60;
+    let new_minute = if new_second == 0 {
+        WRITE_NEW_TIME.store(true, core::sync::atomic::Ordering::Relaxed);
+        (current_minute + 1) % 60
+    } else {
+        current_minute
+    };
+    let new_hour = if new_minute == 0 && new_second == 0 {
+        WRITE_NEW_TIME.store(true, core::sync::atomic::Ordering::Relaxed);
+        (current_hour + 1) % 24
+    } else {
+        current_hour
+    };
+
+    SECOND.store(new_second, core::sync::atomic::Ordering::Relaxed);
+    MINUTE.store(new_minute, core::sync::atomic::Ordering::Relaxed);
+    HOUR.store(new_hour, core::sync::atomic::Ordering::Relaxed);
 }
