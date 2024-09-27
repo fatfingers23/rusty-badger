@@ -23,9 +23,9 @@ use embedded_text::{
 use gpio::Output;
 use heapless::String;
 use tinybmp::Bmp;
-use uc8151::asynch::Uc8151;
 use uc8151::LUT;
 use uc8151::WIDTH;
+use uc8151::{asynch::Uc8151, UpdateRegion};
 use {defmt_rtt as _, panic_probe as _};
 
 use crate::Spi0Bus;
@@ -86,6 +86,8 @@ pub async fn run_the_display(
     let mut cycles_since_last_clear = 0;
 
     loop {
+        //TODO do the clock here need to
+        //1. Find the right time for counting
         if cycles_since_last_clear >= cycles_to_skip || first_run {
             let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
             let _ = core::fmt::write(&mut text, format_args!("Count: {}", count));
@@ -117,7 +119,7 @@ pub async fn run_the_display(
             }
             text.clear();
             // let _ = display.clear(Rgb565::WHITE.into());
-            let _ = display.update().await;
+            // let _ = display.update().await;
             WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
             cycles_since_last_clear = 0;
         }
@@ -127,16 +129,20 @@ pub async fn run_the_display(
             let tga: Bmp<BinaryColor> = Bmp::from_slice(&current_image.image()).unwrap();
             let image = Image::new(&tga, current_image.image_location());
             //clear image location by writing a white rectangle over previous image location
-            let clear_bounds = Rectangle::new(
+            let image_bounds = Size::new(160, 140);
+            let clear_rectangle = Rectangle::new(
                 current_image.previous().image_location(),
                 Size::new(157, 101),
             );
-            clear_bounds
+            clear_rectangle
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(&mut display)
                 .unwrap();
 
             let _ = image.draw(&mut display);
+            //TODO need to look up the reginal area display
+            //             let update_region = UpdateRegion::new(192, 32, 160, 144).unwrap();
+            // let result = display.partial_update(update_region).await;
             let _ = display.update().await;
             CHANGE_IMAGE.store(false, core::sync::atomic::Ordering::Relaxed);
         }
