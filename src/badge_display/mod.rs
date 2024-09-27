@@ -28,7 +28,7 @@ use uc8151::WIDTH;
 use uc8151::{asynch::Uc8151, UpdateRegion};
 use {defmt_rtt as _, panic_probe as _};
 
-use crate::Spi0Bus;
+use crate::{env::env_value, helpers::easy_format, Spi0Bus};
 
 //Display state
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
@@ -72,11 +72,19 @@ pub async fn run_the_display(
         .unwrap();
 
     // Create the text box and apply styling options.
+    let display_text = easy_format::<29>(format_args!(
+        "{}\n{}",
+        env_value("NAME"),
+        env_value("DETAILS")
+    ));
 
-    let text = "Bailey Townsend\nSoftware Dev";
     // \nWritten in rust\nRunning on a pico w";
-    let name_and_detail_box =
-        TextBox::with_textbox_style(text, name_and_detail_bounds, character_style, textbox_style);
+    let name_and_detail_box = TextBox::with_textbox_style(
+        &display_text,
+        name_and_detail_bounds,
+        character_style,
+        textbox_style,
+    );
 
     // Draw the text box.
     name_and_detail_box.draw(&mut display).unwrap();

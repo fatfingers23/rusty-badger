@@ -34,6 +34,8 @@ use {defmt_rtt as _, panic_probe as _};
 
 mod badge_display;
 mod cyw43_driver;
+mod env;
+mod helpers;
 
 type Spi0Bus = Mutex<NoopRawMutex, Spi<'static, SPI0, spi::Async>>;
 
