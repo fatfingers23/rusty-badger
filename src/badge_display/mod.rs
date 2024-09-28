@@ -9,15 +9,12 @@ use display_image::get_current_image;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
-use embassy_sync::{
-    blocking_mutex::{self, raw::CriticalSectionRawMutex},
-    mutex,
-};
+use embassy_sync::blocking_mutex::{self, raw::CriticalSectionRawMutex};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_graphics::{
     image::Image,
     mono_font::{ascii::*, MonoTextStyle},
-    pixelcolor::{BinaryColor, Rgb565},
+    pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
     text::Text,
@@ -30,9 +27,9 @@ use embedded_text::{
 use gpio::Output;
 use heapless::String;
 use tinybmp::Bmp;
+use uc8151::asynch::Uc8151;
 use uc8151::LUT;
 use uc8151::WIDTH;
-use uc8151::{asynch::Uc8151, UpdateRegion};
 use {defmt_rtt as _, panic_probe as _};
 
 use crate::{env::env_value, helpers::easy_format, Spi0Bus};
@@ -45,9 +42,6 @@ pub static RTC_TIME_STRING: blocking_mutex::Mutex<CriticalSectionRawMutex, RefCe
     blocking_mutex::Mutex::new(RefCell::new(String::<8>::new()));
 pub static TEMP: AtomicU8 = AtomicU8::new(0);
 pub static HUMIDITY: AtomicU8 = AtomicU8::new(0);
-pub static HOUR: AtomicU8 = AtomicU8::new(10);
-pub static MINUTE: AtomicU8 = AtomicU8::new(57);
-pub static SECOND: AtomicU8 = AtomicU8::new(0);
 
 #[embassy_executor::task]
 pub async fn run_the_display(
@@ -118,13 +112,15 @@ pub async fn run_the_display(
         }
 
         //Updates the top bar
-        //Runs every 30 cycles/15 seconds and first run
-        if cycles_since_last_clear % 30 == 0 || first_run {
+        //Runs every 60 cycles/30 seconds and first run
+        if cycles_since_last_clear % 60 == 0 || first_run {
             let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
             let temp = TEMP.load(core::sync::atomic::Ordering::Relaxed);
             let humidity = HUMIDITY.load(core::sync::atomic::Ordering::Relaxed);
-            let top_text: String<64> =
-                easy_format::<64>(format_args!("{}F {}% Count: {}", temp, humidity, count));
+            let top_text: String<64> = easy_format::<64>(format_args!(
+                "{}F {}% Wifi found: {}",
+                temp, humidity, count
+            ));
             let top_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
             top_bounds
                 .into_styled(
@@ -149,8 +145,6 @@ pub async fn run_the_display(
                     info!("Error updating display");
                 }
             }
-
-            WIFI_COUNT.store(count + 1, core::sync::atomic::Ordering::Relaxed);
         }
 
         //Runs every 120 cycles/60 seconds and first run

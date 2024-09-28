@@ -4,13 +4,11 @@
 
 #![no_std]
 #![no_main]
-use core::str::from_utf8;
-use core::time;
-
 use badge_display::display_image::DisplayImage;
-use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE, RTC_TIME_STRING};
+use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE, RTC_TIME_STRING, WIFI_COUNT};
+use core::fmt::Write;
+use core::str::from_utf8;
 use cyw43_driver::setup_cyw43;
-use cyw43_pio::PioSpi;
 use defmt::info;
 use defmt::*;
 use embassy_executor::Spawner;
@@ -18,6 +16,7 @@ use embassy_net::dns::DnsSocket;
 use embassy_net::tcp::client::{TcpClient, TcpClientState};
 use embassy_net::{Stack, StackResources};
 use embassy_rp::clocks::RoscRng;
+use embassy_rp::flash::Async;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
 use embassy_rp::peripherals::{DMA_CH0, PIO0, SPI0};
@@ -27,13 +26,15 @@ use embassy_rp::spi::{self};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
+use embedded_hal_1::digital::OutputPin;
 use env::env_value;
 use gpio::{Level, Output, Pull};
-use heapless::Vec;
+use heapless::{String, Vec};
 use helpers::easy_format;
 use rand::RngCore;
 use reqwless::client::{HttpClient, TlsConfig, TlsVerify};
 use reqwless::request::Method;
+use save::{read_postcard_from_flash, save_postcard_to_flash, Save};
 use serde::Deserialize;
 use static_cell::StaticCell;
 use temp_sensor::run_the_temp_sensor;
@@ -43,13 +44,23 @@ mod badge_display;
 mod cyw43_driver;
 mod env;
 mod helpers;
+mod save;
 mod temp_sensor;
 
 type Spi0Bus = Mutex<NoopRawMutex, Spi<'static, SPI0, spi::Async>>;
 
+const BSSID_LEN: usize = 1_000;
+const ADDR_OFFSET: u32 = 0x100000;
+const SAVE_OFFSET: u32 = 0x00;
+
+const FLASH_SIZE: usize = 2 * 1024 * 1024;
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+    let mut user_led = Output::new(p.PIN_22, Level::High);
+    user_led.set_high();
+
     let (net_device, mut control) = setup_cyw43(
         p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, spawner,
     )
@@ -74,7 +85,7 @@ async fn main(spawner: Spawner) {
     let _btn_up = Input::new(p.PIN_15, Pull::Down);
     let _btn_down = Input::new(p.PIN_11, Pull::Down);
     let _btn_a = Input::new(p.PIN_12, Pull::Down);
-    let _btn_b = Input::new(p.PIN_13, Pull::Down);
+    let btn_b = Input::new(p.PIN_13, Pull::Down);
     let btn_c = Input::new(p.PIN_14, Pull::Down);
 
     let spi = Spi::new(
@@ -242,13 +253,22 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    //
-
+    //Set up saving
+    let mut flash = embassy_rp::flash::Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH3);
+    let mut save: Save = read_postcard_from_flash(ADDR_OFFSET, &mut flash, SAVE_OFFSET).unwrap();
+    WIFI_COUNT.store(save.wifi_counted, core::sync::atomic::Ordering::Relaxed);
     //Task spawning
     spawner.must_spawn(run_the_temp_sensor(p.I2C0, p.PIN_5, p.PIN_4));
     spawner.must_spawn(run_the_display(spi_bus, cs, dc, busy, reset));
 
     //Input loop
+    let cycle = Duration::from_millis(100);
+    let mut current_cycle = 0;
+    //5 minutes
+    let reset_cycle = 300_000;
+    //Turn off led to signify that the badge is ready
+    user_led.set_low();
+
     loop {
         //Change Image Button
         if btn_c.is_high() {
@@ -258,6 +278,14 @@ async fn main(spawner: Spawner) {
             CURRENT_IMAGE.store(new_image.as_u8(), core::sync::atomic::Ordering::Relaxed);
             CHANGE_IMAGE.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
+            current_cycle += 500;
+            continue;
+        }
+
+        if btn_b.is_high() {
+            user_led.toggle();
+            Timer::after(Duration::from_millis(500)).await;
+            current_cycle += 500;
             continue;
         }
 
@@ -275,8 +303,22 @@ async fn main(spawner: Spawner) {
                 rtc_time_string.borrow_mut().push_str("No Wifi").unwrap();
             });
         }
-
-        Timer::after(Duration::from_millis(100)).await;
+        if current_cycle == 0 {
+            let mut scanner = control.scan(Default::default()).await;
+            while let Some(bss) = scanner.next().await {
+                process_bssid(bss.bssid, &mut save.wifi_counted, &mut save.bssid);
+                let ssid = core::str::from_utf8(&bss.ssid).unwrap();
+                info!("ssid: {}", ssid);
+            }
+            save_postcard_to_flash(ADDR_OFFSET, &mut flash, SAVE_OFFSET, &save).unwrap();
+            WIFI_COUNT.store(save.wifi_counted, core::sync::atomic::Ordering::Relaxed);
+            info!("wifi_counted: {}", save.wifi_counted);
+        }
+        if current_cycle >= reset_cycle {
+            current_cycle = 0;
+        }
+        current_cycle += 1;
+        Timer::after(cycle).await;
     }
 }
 
@@ -316,5 +358,28 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 struct TimeApiResponse<'a> {
     datetime: &'a str,
     day_of_week: u8,
-    // other fields as needed
+}
+
+fn process_bssid(bssid: [u8; 6], wifi_counted: &mut u32, bssids: &mut Vec<String<17>, BSSID_LEN>) {
+    let bssid_str = format_bssid(bssid);
+    if !bssids.contains(&bssid_str) {
+        *wifi_counted += 1;
+        info!("bssid: {:x}", bssid_str);
+        let result = bssids.push(bssid_str);
+        if result.is_err() {
+            info!("bssid list full");
+            bssids.clear();
+        }
+    }
+}
+
+fn format_bssid(bssid: [u8; 6]) -> String<17> {
+    let mut s = String::new();
+    for (i, byte) in bssid.iter().enumerate() {
+        if i != 0 {
+            let _ = s.write_char(':');
+        }
+        core::fmt::write(&mut s, format_args!("{:02x}", byte)).unwrap();
+    }
+    s
 }

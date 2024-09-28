@@ -33,6 +33,6 @@ pub async fn run_the_temp_sensor(
             combined.humidity.as_percent() as u8,
             core::sync::atomic::Ordering::Relaxed,
         );
-        Timer::after_secs(120).await;
+        Timer::after_secs(30).await;
     }
 }
