@@ -5,7 +5,10 @@
 #![no_std]
 #![no_main]
 use badge_display::display_image::DisplayImage;
-use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE, RTC_TIME_STRING, WIFI_COUNT};
+use badge_display::{
+    run_the_display, Screen, CHANGE_IMAGE, CURRENT_IMAGE, DISPLAY_CHANGED, RTC_TIME_STRING,
+    SCREEN_TO_SHOW, WIFI_COUNT,
+};
 use core::fmt::Write;
 use core::str::from_utf8;
 use cyw43_driver::setup_cyw43;
@@ -81,9 +84,9 @@ async fn main(spawner: Spawner) {
     let cs = Output::new(cs, Level::High);
     let busy = Input::new(busy, Pull::Up);
 
-    let _btn_up = Input::new(p.PIN_15, Pull::Down);
-    let _btn_down = Input::new(p.PIN_11, Pull::Down);
-    let _btn_a = Input::new(p.PIN_12, Pull::Down);
+    let btn_up = Input::new(p.PIN_15, Pull::Down);
+    let btn_down = Input::new(p.PIN_11, Pull::Down);
+    let btn_a = Input::new(p.PIN_12, Pull::Down);
     let btn_b = Input::new(p.PIN_13, Pull::Down);
     let btn_c = Input::new(p.PIN_14, Pull::Down);
 
@@ -281,9 +284,41 @@ async fn main(spawner: Spawner) {
             continue;
         }
 
+        if btn_a.is_high() {
+            info!("Button A pressed");
+            user_led.toggle();
+            Timer::after(Duration::from_millis(500)).await;
+            current_cycle += 500;
+            continue;
+        }
+
+        if btn_down.is_high() {
+            info!("Button Down pressed");
+            SCREEN_TO_SHOW.lock(|screen| {
+                screen.replace(Screen::WifiList);
+            });
+            DISPLAY_CHANGED.store(true, core::sync::atomic::Ordering::Relaxed);
+            Timer::after(Duration::from_millis(500)).await;
+            current_cycle += 500;
+            continue;
+        }
+
+        if btn_up.is_high() {
+            info!("Button Up pressed");
+            SCREEN_TO_SHOW.lock(|screen| {
+                screen.replace(Screen::Badge);
+            });
+            DISPLAY_CHANGED.store(true, core::sync::atomic::Ordering::Relaxed);
+            Timer::after(Duration::from_millis(500)).await;
+            current_cycle += 500;
+            continue;
+        }
+
         if btn_b.is_high() {
             info!("Button B pressed");
-            user_led.toggle();
+            save.wifi_counted = 0;
+            save.bssid.clear();
+            WIFI_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
             current_cycle += 500;
             continue;
