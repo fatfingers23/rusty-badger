@@ -78,7 +78,8 @@ async fn main(spawner: Spawner) {
     let power = p.PIN_10;
 
     let reset = Output::new(reset, Level::Low);
-    let _power = Output::new(power, Level::Low);
+    let mut power = Output::new(power, Level::Low);
+    power.set_high();
 
     let dc = Output::new(dc, Level::Low);
     let cs = Output::new(cs, Level::High);
