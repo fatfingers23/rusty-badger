@@ -7,7 +7,7 @@
 use badge_display::display_image::DisplayImage;
 use badge_display::{
     run_the_display, Screen, CHANGE_IMAGE, CURRENT_IMAGE, DISPLAY_CHANGED, FORCE_SCREEN_REFRESH,
-    RTC_TIME_STRING, SCREEN_TO_SHOW, WIFI_COUNT,
+    RECENT_WIFI_NETWORKS, RECENT_WIFI_NETWORKS_VEC, RTC_TIME_STRING, SCREEN_TO_SHOW, WIFI_COUNT,
 };
 use core::fmt::Write;
 use core::str::from_utf8;
@@ -318,7 +318,37 @@ async fn main(spawner: Spawner) {
             info!("Button B pressed");
             save.wifi_counted = 0;
             save.bssid.clear();
-            WIFI_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+
+            SCREEN_TO_SHOW.lock(|screen| {
+                if *screen.borrow() == Screen::Badge {
+                    WIFI_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+                }
+            });
+
+            let mut recent_networks = RECENT_WIFI_NETWORKS_VEC::new();
+            let mut scanner = control.scan(Default::default()).await;
+            while let Some(bss) = scanner.next().await {
+                process_bssid(bss.bssid, &mut save.wifi_counted, &mut save.bssid);
+                if recent_networks.len() < 8 {
+                    let possible_ssid = core::str::from_utf8(&bss.ssid);
+                    match possible_ssid {
+                        Ok(ssid) => {
+                            let ssid_string = easy_format::<32>(format_args!("{}", ssid.trim()));
+                            if recent_networks.contains(&ssid_string) {
+                                continue;
+                            }
+                            let _ = recent_networks.push(ssid_string);
+                        }
+                        Err(_) => {
+                            continue;
+                        }
+                    }
+                }
+            }
+            RECENT_WIFI_NETWORKS.lock(|recent_networks_vec| {
+                recent_networks_vec.replace(recent_networks);
+            });
+
             FORCE_SCREEN_REFRESH.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
             current_cycle += 500;

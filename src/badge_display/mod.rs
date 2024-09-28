@@ -25,7 +25,7 @@ use embedded_text::{
     TextBox,
 };
 use gpio::Output;
-use heapless::String;
+use heapless::{String, Vec};
 use tinybmp::Bmp;
 use uc8151::LUT;
 use uc8151::WIDTH;
@@ -34,9 +34,16 @@ use {defmt_rtt as _, panic_probe as _};
 
 use crate::{env::env_value, helpers::easy_format, Spi0Bus};
 
+pub type RECENT_WIFI_NETWORKS_VEC = Vec<String<32>, 4>;
+
 //Display state
 pub static SCREEN_TO_SHOW: blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<Screen>> =
     blocking_mutex::Mutex::new(RefCell::new(Screen::Badge));
+pub static RECENT_WIFI_NETWORKS: blocking_mutex::Mutex<
+    CriticalSectionRawMutex,
+    RefCell<RECENT_WIFI_NETWORKS_VEC>,
+> = blocking_mutex::Mutex::new(RefCell::new(RECENT_WIFI_NETWORKS_VEC::new()));
+
 pub static FORCE_SCREEN_REFRESH: AtomicBool = AtomicBool::new(true);
 pub static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
@@ -235,7 +242,7 @@ pub async fn run_the_display(
                 CHANGE_IMAGE.store(false, core::sync::atomic::Ordering::Relaxed);
             }
         } else {
-            if cycles_since_last_clear % 60 == 0 || force_screen_refresh {
+            if force_screen_refresh {
                 let top_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
                 top_bounds
                     .into_styled(
@@ -263,6 +270,39 @@ pub async fn run_the_display(
                     Err(_) => {
                         info!("Error updating display");
                     }
+                }
+
+                //write the wifi list
+                let mut y_offset = 24;
+                let wifi_list = RECENT_WIFI_NETWORKS.lock(|x| x.borrow().clone());
+                for wifi in wifi_list.iter() {
+                    // let wifi_text: String<64> = easy_format::<64>(format_args!("{}", wifi));
+                    let wifi_bounds = Rectangle::new(Point::new(0, y_offset), Size::new(WIDTH, 24));
+                    wifi_bounds
+                        .into_styled(
+                            PrimitiveStyleBuilder::default()
+                                .stroke_color(BinaryColor::Off)
+                                .fill_color(BinaryColor::On)
+                                .stroke_width(1)
+                                .build(),
+                        )
+                        .draw(&mut display)
+                        .unwrap();
+
+                    Text::new(wifi.trim(), Point::new(8, y_offset + 16), character_style)
+                        .draw(&mut display)
+                        .unwrap();
+
+                    let result = display
+                        .partial_update(wifi_bounds.try_into().unwrap())
+                        .await;
+                    match result {
+                        Ok(_) => {}
+                        Err(_) => {
+                            info!("Error updating display");
+                        }
+                    }
+                    y_offset += 24;
                 }
             }
         }
