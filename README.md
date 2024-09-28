@@ -2,6 +2,8 @@
 
 A rust controlled Badge for a conferences or anywhere else you want to be extra 
 
+![Picture of the Badger 2040 running this softeare](./repo-images/badger.jpg)
+
 ## Features
 * Display some text to the left like name and job title
 * Display a small bmp image, can alternate images by pressing the c button. This example has Ferris with a knife and a QR code that links to this repo
