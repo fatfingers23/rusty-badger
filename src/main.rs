@@ -6,8 +6,8 @@
 #![no_main]
 use badge_display::display_image::DisplayImage;
 use badge_display::{
-    run_the_display, Screen, CHANGE_IMAGE, CURRENT_IMAGE, DISPLAY_CHANGED, FORCE_SCREEN_REFRESH,
-    RECENT_WIFI_NETWORKS, RECENT_WIFI_NETWORKS_VEC, RTC_TIME_STRING, SCREEN_TO_SHOW, WIFI_COUNT,
+    run_the_display, RecentWifiNetworksVec, Screen, CHANGE_IMAGE, CURRENT_IMAGE, DISPLAY_CHANGED,
+    FORCE_SCREEN_REFRESH, RECENT_WIFI_NETWORKS, RTC_TIME_STRING, SCREEN_TO_SHOW, WIFI_COUNT,
 };
 use core::fmt::Write;
 use core::str::from_utf8;
@@ -266,8 +266,9 @@ async fn main(spawner: Spawner) {
     //Input loop
     let cycle = Duration::from_millis(100);
     let mut current_cycle = 0;
-    //5 minutes
-    let reset_cycle = 300_000;
+    let mut time_to_scan = true;
+    //5 minutes(ish) idk it's late and my math is so bad rn
+    let reset_cycle = 3_000;
     //Turn off led to signify that the badge is ready
     user_led.set_low();
 
@@ -280,15 +281,14 @@ async fn main(spawner: Spawner) {
             CURRENT_IMAGE.store(new_image.as_u8(), core::sync::atomic::Ordering::Relaxed);
             CHANGE_IMAGE.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
-            current_cycle += 500;
             continue;
         }
 
         if btn_a.is_high() {
+            println!("{:?}", current_cycle);
             info!("Button A pressed");
             user_led.toggle();
             Timer::after(Duration::from_millis(500)).await;
-            current_cycle += 500;
             continue;
         }
 
@@ -299,7 +299,6 @@ async fn main(spawner: Spawner) {
             });
             DISPLAY_CHANGED.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
-            current_cycle += 500;
             continue;
         }
 
@@ -310,22 +309,23 @@ async fn main(spawner: Spawner) {
             });
             DISPLAY_CHANGED.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
-            current_cycle += 500;
             continue;
         }
 
         if btn_b.is_high() {
             info!("Button B pressed");
-            save.wifi_counted = 0;
-            save.bssid.clear();
 
             SCREEN_TO_SHOW.lock(|screen| {
                 if *screen.borrow() == Screen::Badge {
+                    //IF on badge screen and b pressed reset wifi count
+                    save.wifi_counted = 0;
+                    save.bssid.clear();
                     WIFI_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+                    current_cycle = 0;
                 }
             });
 
-            let mut recent_networks = RECENT_WIFI_NETWORKS_VEC::new();
+            let mut recent_networks = RecentWifiNetworksVec::new();
             let mut scanner = control.scan(Default::default()).await;
             while let Some(bss) = scanner.next().await {
                 process_bssid(bss.bssid, &mut save.wifi_counted, &mut save.bssid);
@@ -333,6 +333,7 @@ async fn main(spawner: Spawner) {
                     let possible_ssid = core::str::from_utf8(&bss.ssid);
                     match possible_ssid {
                         Ok(ssid) => {
+                            info!("ssid: {}", ssid);
                             let ssid_string = easy_format::<32>(format_args!("{}", ssid.trim()));
                             if recent_networks.contains(&ssid_string) {
                                 continue;
@@ -351,7 +352,7 @@ async fn main(spawner: Spawner) {
 
             FORCE_SCREEN_REFRESH.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
-            current_cycle += 500;
+
             continue;
         }
 
@@ -369,19 +370,20 @@ async fn main(spawner: Spawner) {
                 rtc_time_string.borrow_mut().push_str("No Wifi").unwrap();
             });
         }
-        if current_cycle == 0 {
+        if time_to_scan {
+            info!("Scanning for wifi networks");
+            time_to_scan = false;
             let mut scanner = control.scan(Default::default()).await;
             while let Some(bss) = scanner.next().await {
                 process_bssid(bss.bssid, &mut save.wifi_counted, &mut save.bssid);
-                let ssid = core::str::from_utf8(&bss.ssid).unwrap();
-                info!("ssid: {}", ssid);
             }
-            save_postcard_to_flash(ADDR_OFFSET, &mut flash, SAVE_OFFSET, &save).unwrap();
             WIFI_COUNT.store(save.wifi_counted, core::sync::atomic::Ordering::Relaxed);
+            save_postcard_to_flash(ADDR_OFFSET, &mut flash, SAVE_OFFSET, &save).unwrap();
             info!("wifi_counted: {}", save.wifi_counted);
         }
         if current_cycle >= reset_cycle {
             current_cycle = 0;
+            time_to_scan = true;
         }
         current_cycle += 1;
         Timer::after(cycle).await;
@@ -430,7 +432,8 @@ fn process_bssid(bssid: [u8; 6], wifi_counted: &mut u32, bssids: &mut Vec<String
     let bssid_str = format_bssid(bssid);
     if !bssids.contains(&bssid_str) {
         *wifi_counted += 1;
-        info!("bssid: {:x}", bssid_str);
+        WIFI_COUNT.store(*wifi_counted, core::sync::atomic::Ordering::Relaxed);
+        // info!("bssid: {:x}", bssid_str);
         let result = bssids.push(bssid_str);
         if result.is_err() {
             info!("bssid list full");

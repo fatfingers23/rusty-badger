@@ -34,15 +34,15 @@ use {defmt_rtt as _, panic_probe as _};
 
 use crate::{env::env_value, helpers::easy_format, Spi0Bus};
 
-pub type RECENT_WIFI_NETWORKS_VEC = Vec<String<32>, 4>;
+pub type RecentWifiNetworksVec = Vec<String<32>, 4>;
 
 //Display state
 pub static SCREEN_TO_SHOW: blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<Screen>> =
     blocking_mutex::Mutex::new(RefCell::new(Screen::Badge));
 pub static RECENT_WIFI_NETWORKS: blocking_mutex::Mutex<
     CriticalSectionRawMutex,
-    RefCell<RECENT_WIFI_NETWORKS_VEC>,
-> = blocking_mutex::Mutex::new(RefCell::new(RECENT_WIFI_NETWORKS_VEC::new()));
+    RefCell<RecentWifiNetworksVec>,
+> = blocking_mutex::Mutex::new(RefCell::new(RecentWifiNetworksVec::new()));
 
 pub static FORCE_SCREEN_REFRESH: AtomicBool = AtomicBool::new(true);
 pub static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
@@ -131,7 +131,7 @@ pub async fn run_the_display(
         }
 
         SCREEN_TO_SHOW.lock(|x| current_screen = *x.borrow());
-        info!("Current Screen: {:?}", current_screen);
+        // info!("Current Screen: {:?}", current_screen);
         if current_screen == Screen::Badge {
             if force_screen_refresh {
                 // Draw the text box.
@@ -142,6 +142,7 @@ pub async fn run_the_display(
             //Runs every 60 cycles/30 seconds and first run
             if cycles_since_last_clear % 60 == 0 || force_screen_refresh {
                 let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                info!("Wifi count: {}", count);
                 let temp = TEMP.load(core::sync::atomic::Ordering::Relaxed);
                 let humidity = HUMIDITY.load(core::sync::atomic::Ordering::Relaxed);
                 let top_text: String<64> = easy_format::<64>(format_args!(
