@@ -1,13 +1,25 @@
-## Raspberry Pico W Embassy Template
+# Badger 2040 W written in rust
 
-This is just a simple template for setting up a project using [embassy_rp](https://github.com/embassy-rs/embassy/tree/2d678d695637ed1023fd80fea482d60a288e4343/embassy-rp). This currently pulls all dependencies from the embassy repo because I found some of the examples not working with the latest versions of the dependencies on crates.io. Currently pulling commit `2b031756c6d705f58de972de48f7300b4fdc673c` of the embassy repo. Also will notice the `cargo.toml` has everything including the kitchen sink. Trim what you don't need, this is mostly for beginners(me) to get started with.
+A rust controlled Badge for a conferences or anywhere else you want to be extra 
 
-Will notice this is the Wifi Blinky example. I did this so I can include the cyw43 firmware and an example of how to load it onto the pico.
+## Features
+* Display some text to the left like name and job title
+* Display a small bmp image, can alternate images by pressing the c button. This example has Ferris with a knife and a QR code that links to this repo
+* Connects to a [Adafruit Sensirion SHTC3](https://www.adafruit.com/product/4636) via STEMMA QT / Qwiic to get real time temperature and humidity 
+* If you set a wifi network in [.env](.env) the badge will set the pico's RTC and display the time one the display.
+* Counts unique wifi bssid's it comes across and keeps those counts unique across reboots by writing to flash.
 
-## Setup
 
-Refer to [embassy](https://github.com/embassy-rs/embassy). Feel free to leave a issue though if you would like help setting up.
+## Timings
+The project is a mosh posh of things to get it ready for an event I am going to this weekend, so it is not always the best code or well thought out. Especially timings, I did not want to always refresh everything as fast as possible for battery and Eink constraints. 
+* roughly every 5 mins it checks for new wifi networks
+* roughly every 30 seconds it takes a new temp/humidity reading
+* roughly every min it updates the time display, altho the RTC should keep pretty accurate timing
+* roughly every 30 seconds it updates the top bar that holds wifi count as well as sensor data
 
-## How do I do xyz?
 
-Check the the [embassy_rp examples](https://github.com/embassy-rs/embassy/tree/2d678d695637ed1023fd80fea482d60a288e4343/examples/rp). Should ideally be able to take any of those and run it inside of this template, this is what it is based off of.
+## This project would not be possible without..
+* [trvswgnr](https://github.com/trvswgnr) for their amazing ferris with a knife image. All i did was badly convert it to grayscale and scaled it down. 
+* embassy framework and their great [examples](https://github.com/embassy-rs/embassy/tree/main/examples/rp). Exactly zero chance I would have any of this written without this directory.
+* the [uc8151-rs](https://crates.io/crates/uc8151) crate. Would not be able to write to the e ink display without this great crate.
+* And every other single crate found in [Cargo.toml](./Cargo.toml). None of it would be possible with out those packages and maintainers.

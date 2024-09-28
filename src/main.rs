@@ -19,14 +19,13 @@ use embassy_rp::clocks::RoscRng;
 use embassy_rp::flash::Async;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
-use embassy_rp::peripherals::{DMA_CH0, PIO0, SPI0};
+use embassy_rp::peripherals::SPI0;
 use embassy_rp::rtc::{DateTime, DayOfWeek};
 use embassy_rp::spi::Spi;
 use embassy_rp::spi::{self};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
-use embedded_hal_1::digital::OutputPin;
 use env::env_value;
 use gpio::{Level, Output, Pull};
 use heapless::{String, Vec};
@@ -283,6 +282,7 @@ async fn main(spawner: Spawner) {
         }
 
         if btn_b.is_high() {
+            info!("Button B pressed");
             user_led.toggle();
             Timer::after(Duration::from_millis(500)).await;
             current_cycle += 500;

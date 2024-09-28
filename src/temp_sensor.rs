@@ -1,4 +1,3 @@
-use bt_hci::cmd::info;
 use defmt::*;
 use embassy_rp::i2c::{I2c, SclPin, SdaPin};
 use embassy_rp::peripherals::I2C0;
