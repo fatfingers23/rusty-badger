@@ -6,19 +6,26 @@
 #![no_main]
 use badge_display::display_image::DisplayImage;
 use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE, RTC_TIME_STRING};
+use bt_hci::cmd::info;
+use cyw43_driver::setup_cyw43;
+use cyw43_pio::PioSpi;
 use defmt::info;
 use embassy_executor::Spawner;
+use embassy_net::{Stack, StackResources};
+use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio;
 use embassy_rp::gpio::Input;
-use embassy_rp::peripherals::SPI0;
+use embassy_rp::peripherals::{DMA_CH0, PIO0, SPI0};
 use embassy_rp::rtc::{DateTime, DayOfWeek};
 use embassy_rp::spi::Spi;
 use embassy_rp::spi::{self};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
+use env::env_value;
 use gpio::{Level, Output, Pull};
 use helpers::easy_format;
+use rand::RngCore;
 use static_cell::StaticCell;
 use temp_sensor::run_the_temp_sensor;
 use {defmt_rtt as _, panic_probe as _};
@@ -34,12 +41,10 @@ type Spi0Bus = Mutex<NoopRawMutex, Spi<'static, SPI0, spi::Async>>;
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    // let (_net_device, mut control) = setup_cyw43(
-    //     p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, spawner,
-    // )
-    // .await;
-
-    // let input = gpio::Input::new(p.PIN_29, gpio::Pull::Up);
+    let (net_device, mut control) = setup_cyw43(
+        p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, spawner,
+    )
+    .await;
 
     let miso = p.PIN_16;
     let mosi = p.PIN_19;
@@ -79,8 +84,62 @@ async fn main(spawner: Spawner) {
 
     info!("led on!");
     // control.gpio_set(0, true).await;
-    spawner.must_spawn(run_the_temp_sensor(p.I2C0, p.PIN_5, p.PIN_4));
-    spawner.must_spawn(run_the_display(spi_bus, cs, dc, busy, reset));
+
+    //wifi setup
+    let mut rng = RoscRng;
+
+    let config = embassy_net::Config::dhcpv4(Default::default());
+    let seed = rng.next_u64();
+
+    // Init network stack
+    static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
+    let stack = &*STACK.init(Stack::new(
+        net_device,
+        config,
+        RESOURCES.init(StackResources::<5>::new()),
+        seed,
+    ));
+
+    spawner.must_spawn(net_task(stack));
+    //Attempt to connect to wifi to get RTC time loop for 2 minutes
+    let mut wifi_connection_attempts = 0;
+    let mut connected_to_wifi = false;
+
+    let wifi_ssid = env_value("WIFI_SSID");
+    let wifi_password = env_value("WIFI_PASSWORD");
+    while wifi_connection_attempts < 30 {
+        match control.join_wpa2(wifi_ssid, &wifi_password).await {
+            Ok(_) => {
+                connected_to_wifi = true;
+                info!("join successful");
+                break;
+            }
+            Err(err) => {
+                info!("join failed with status={}", err.status);
+            }
+        }
+        Timer::after(Duration::from_secs(1)).await;
+        wifi_connection_attempts += 1;
+    }
+
+    if connected_to_wifi {
+        info!("waiting for DHCP...");
+        while !stack.is_config_up() {
+            Timer::after_millis(100).await;
+        }
+        info!("DHCP is now up!");
+
+        info!("waiting for link up...");
+        while !stack.is_link_up() {
+            Timer::after_millis(500).await;
+        }
+        info!("Link is up!");
+
+        info!("waiting for stack to be up...");
+        stack.wait_config_up().await;
+        info!("Stack is up!");
+    }
 
     //rtc setup
     let mut rtc = embassy_rp::rtc::Rtc::new(p.RTC);
@@ -97,6 +156,10 @@ async fn main(spawner: Spawner) {
         };
         rtc.set_datetime(now).unwrap();
     }
+
+    //Task spawning
+    spawner.must_spawn(run_the_temp_sensor(p.I2C0, p.PIN_5, p.PIN_4));
+    spawner.must_spawn(run_the_display(spi_bus, cs, dc, busy, reset));
 
     //Input loop
     loop {
@@ -148,4 +211,9 @@ fn set_display_time(time: DateTime) {
             .push_str(formatted_time.as_str())
             .unwrap();
     });
+}
+
+#[embassy_executor::task]
+async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
+    stack.run().await
 }
