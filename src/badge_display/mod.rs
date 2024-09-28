@@ -37,6 +37,7 @@ use crate::{env::env_value, helpers::easy_format, Spi0Bus};
 //Display state
 pub static SCREEN_TO_SHOW: blocking_mutex::Mutex<CriticalSectionRawMutex, RefCell<Screen>> =
     blocking_mutex::Mutex::new(RefCell::new(Screen::Badge));
+pub static FORCE_SCREEN_REFRESH: AtomicBool = AtomicBool::new(true);
 pub static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 pub static CURRENT_IMAGE: AtomicU8 = AtomicU8::new(0);
 pub static CHANGE_IMAGE: AtomicBool = AtomicBool::new(true);
@@ -91,7 +92,6 @@ pub async fn run_the_display(
         env_value("DETAILS")
     ));
 
-    // \nWritten in rust\nRunning on a pico w";
     let name_and_detail_box = TextBox::with_textbox_style(
         &display_text,
         name_and_detail_bounds,
@@ -99,20 +99,18 @@ pub async fn run_the_display(
         textbox_style,
     );
 
-    // Draw the text box.
-    name_and_detail_box.draw(&mut display).unwrap();
-
     // let _ = display.update().await;
 
     //Each cycle is half a second
     let cycle: Duration = Duration::from_millis(500);
 
-    let mut first_run = true;
     //New start every 120 cycles or 60 seconds
     let cycles_to_clear_at: i32 = 120;
     let mut cycles_since_last_clear = 0;
     let mut current_screen = Screen::Badge;
     loop {
+        let mut force_screen_refresh =
+            FORCE_SCREEN_REFRESH.load(core::sync::atomic::Ordering::Relaxed);
         //Timed based display events
         if DISPLAY_CHANGED.load(core::sync::atomic::Ordering::Relaxed) {
             let clear_rectangle = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, HEIGHT));
@@ -122,15 +120,20 @@ pub async fn run_the_display(
                 .unwrap();
             let _ = display.update().await;
             DISPLAY_CHANGED.store(false, core::sync::atomic::Ordering::Relaxed);
-            first_run = true;
+            force_screen_refresh = true;
         }
 
         SCREEN_TO_SHOW.lock(|x| current_screen = *x.borrow());
         info!("Current Screen: {:?}", current_screen);
         if current_screen == Screen::Badge {
+            if force_screen_refresh {
+                // Draw the text box.
+                name_and_detail_box.draw(&mut display).unwrap();
+            }
+
             //Updates the top bar
             //Runs every 60 cycles/30 seconds and first run
-            if cycles_since_last_clear % 60 == 0 || first_run {
+            if cycles_since_last_clear % 60 == 0 || force_screen_refresh {
                 let count = WIFI_COUNT.load(core::sync::atomic::Ordering::Relaxed);
                 let temp = TEMP.load(core::sync::atomic::Ordering::Relaxed);
                 let humidity = HUMIDITY.load(core::sync::atomic::Ordering::Relaxed);
@@ -165,7 +168,7 @@ pub async fn run_the_display(
             }
 
             //Runs every 120 cycles/60 seconds and first run
-            if cycles_since_last_clear == 0 || first_run {
+            if cycles_since_last_clear == 0 || force_screen_refresh {
                 let mut time_text: String<8> = String::<8>::new();
 
                 let time_box_rectangle_location = Point::new(0, 96);
@@ -212,7 +215,7 @@ pub async fn run_the_display(
 
             //Manually triggered display events
 
-            if CHANGE_IMAGE.load(core::sync::atomic::Ordering::Relaxed) || first_run {
+            if CHANGE_IMAGE.load(core::sync::atomic::Ordering::Relaxed) || force_screen_refresh {
                 let current_image = get_current_image();
                 let tga: Bmp<BinaryColor> = Bmp::from_slice(&current_image.image()).unwrap();
                 let image = Image::new(&tga, current_image.image_location());
@@ -232,7 +235,7 @@ pub async fn run_the_display(
                 CHANGE_IMAGE.store(false, core::sync::atomic::Ordering::Relaxed);
             }
         } else {
-            if cycles_since_last_clear % 60 == 0 || first_run {
+            if cycles_since_last_clear % 60 == 0 || force_screen_refresh {
                 let top_bounds = Rectangle::new(Point::new(0, 0), Size::new(WIDTH, 24));
                 top_bounds
                     .into_styled(
@@ -268,7 +271,7 @@ pub async fn run_the_display(
         if cycles_since_last_clear >= cycles_to_clear_at {
             cycles_since_last_clear = 0;
         }
-        first_run = false;
+        FORCE_SCREEN_REFRESH.store(false, core::sync::atomic::Ordering::Relaxed);
         // info!("Display Cycle: {}", cycles_since_last_clear);
         Timer::after(cycle).await;
     }

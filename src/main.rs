@@ -6,8 +6,8 @@
 #![no_main]
 use badge_display::display_image::DisplayImage;
 use badge_display::{
-    run_the_display, Screen, CHANGE_IMAGE, CURRENT_IMAGE, DISPLAY_CHANGED, RTC_TIME_STRING,
-    SCREEN_TO_SHOW, WIFI_COUNT,
+    run_the_display, Screen, CHANGE_IMAGE, CURRENT_IMAGE, DISPLAY_CHANGED, FORCE_SCREEN_REFRESH,
+    RTC_TIME_STRING, SCREEN_TO_SHOW, WIFI_COUNT,
 };
 use core::fmt::Write;
 use core::str::from_utf8;
@@ -319,6 +319,7 @@ async fn main(spawner: Spawner) {
             save.wifi_counted = 0;
             save.bssid.clear();
             WIFI_COUNT.store(0, core::sync::atomic::Ordering::Relaxed);
+            FORCE_SCREEN_REFRESH.store(true, core::sync::atomic::Ordering::Relaxed);
             Timer::after(Duration::from_millis(500)).await;
             current_cycle += 500;
             continue;
