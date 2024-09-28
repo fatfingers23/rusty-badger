@@ -4,13 +4,18 @@
 
 #![no_std]
 #![no_main]
+use core::str::from_utf8;
+use core::time;
+
 use badge_display::display_image::DisplayImage;
 use badge_display::{run_the_display, CHANGE_IMAGE, CURRENT_IMAGE, RTC_TIME_STRING};
-use bt_hci::cmd::info;
 use cyw43_driver::setup_cyw43;
 use cyw43_pio::PioSpi;
 use defmt::info;
+use defmt::*;
 use embassy_executor::Spawner;
+use embassy_net::dns::DnsSocket;
+use embassy_net::tcp::client::{TcpClient, TcpClientState};
 use embassy_net::{Stack, StackResources};
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio;
@@ -24,8 +29,12 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use env::env_value;
 use gpio::{Level, Output, Pull};
+use heapless::Vec;
 use helpers::easy_format;
 use rand::RngCore;
+use reqwless::client::{HttpClient, TlsConfig, TlsVerify};
+use reqwless::request::Method;
+use serde::Deserialize;
 use static_cell::StaticCell;
 use temp_sensor::run_the_temp_sensor;
 use {defmt_rtt as _, panic_probe as _};
@@ -100,6 +109,8 @@ async fn main(spawner: Spawner) {
         RESOURCES.init(StackResources::<5>::new()),
         seed,
     ));
+    //rtc setup
+    let mut rtc = embassy_rp::rtc::Rtc::new(p.RTC);
 
     spawner.must_spawn(net_task(stack));
     //Attempt to connect to wifi to get RTC time loop for 2 minutes
@@ -123,6 +134,7 @@ async fn main(spawner: Spawner) {
         wifi_connection_attempts += 1;
     }
 
+    let mut time_was_set = false;
     if connected_to_wifi {
         info!("waiting for DHCP...");
         while !stack.is_config_up() {
@@ -139,23 +151,98 @@ async fn main(spawner: Spawner) {
         info!("waiting for stack to be up...");
         stack.wait_config_up().await;
         info!("Stack is up!");
+
+        //RTC Web request
+        let mut rx_buffer = [0; 8192];
+        let mut tls_read_buffer = [0; 16640];
+        let mut tls_write_buffer = [0; 16640];
+        let client_state = TcpClientState::<1, 1024, 1024>::new();
+        let tcp_client = TcpClient::new(stack, &client_state);
+        let dns_client = DnsSocket::new(stack);
+        let tls_config = TlsConfig::new(
+            seed,
+            &mut tls_read_buffer,
+            &mut tls_write_buffer,
+            TlsVerify::None,
+        );
+
+        let mut http_client = HttpClient::new_with_tls(&tcp_client, &dns_client, tls_config);
+        let url = env_value("TIME_API");
+        info!("connecting to {}", &url);
+
+        let mut request = match http_client.request(Method::GET, &url).await {
+            Ok(req) => req,
+            Err(e) => {
+                error!("Failed to make HTTP request: {:?}", e);
+                return; // handle the error
+            }
+        };
+
+        let response = match request.send(&mut rx_buffer).await {
+            Ok(resp) => resp,
+            Err(_e) => {
+                error!("Failed to send HTTP request");
+                return; // handle the error;
+            }
+        };
+
+        let body = match from_utf8(response.body().read_to_end().await.unwrap()) {
+            Ok(b) => b,
+            Err(_e) => {
+                error!("Failed to read response body");
+                return; // handle the error
+            }
+        };
+        info!("Response body: {:?}", &body);
+
+        let bytes = body.as_bytes();
+        match serde_json_core::de::from_slice::<TimeApiResponse>(bytes) {
+            Ok((output, _used)) => {
+                //Deadlines am i right?
+                info!("Datetime: {:?}", output.datetime);
+                //split at T
+                let datetime = output.datetime.split('T').collect::<Vec<&str, 2>>();
+                //split at -
+                let date = datetime[0].split('-').collect::<Vec<&str, 3>>();
+                let year = date[0].parse::<u16>().unwrap();
+                let month = date[1].parse::<u8>().unwrap();
+                let day = date[2].parse::<u8>().unwrap();
+                //split at :
+                let time = datetime[1].split(':').collect::<Vec<&str, 4>>();
+                let hour = time[0].parse::<u8>().unwrap();
+                let minute = time[1].parse::<u8>().unwrap();
+                //split at .
+                let second_split = time[2].split('.').collect::<Vec<&str, 2>>();
+                let second = second_split[0].parse::<f64>().unwrap();
+                let rtc_time = DateTime {
+                    year: year,
+                    month: month,
+                    day: day,
+                    day_of_week: match output.day_of_week {
+                        0 => DayOfWeek::Sunday,
+                        1 => DayOfWeek::Monday,
+                        2 => DayOfWeek::Tuesday,
+                        3 => DayOfWeek::Wednesday,
+                        4 => DayOfWeek::Thursday,
+                        5 => DayOfWeek::Friday,
+                        6 => DayOfWeek::Saturday,
+                        _ => DayOfWeek::Sunday,
+                    },
+                    hour,
+                    minute,
+                    second: second as u8,
+                };
+                rtc.set_datetime(rtc_time).unwrap();
+                time_was_set = true;
+            }
+            Err(_e) => {
+                error!("Failed to parse response body");
+                return; // handle the error
+            }
+        }
     }
 
-    //rtc setup
-    let mut rtc = embassy_rp::rtc::Rtc::new(p.RTC);
-    if !rtc.is_running() {
-        info!("Start RTC");
-        let now = DateTime {
-            year: 2000,
-            month: 1,
-            day: 1,
-            day_of_week: DayOfWeek::Saturday,
-            hour: 18,
-            minute: 31,
-            second: 0,
-        };
-        rtc.set_datetime(now).unwrap();
-    }
+    //
 
     //Task spawning
     spawner.must_spawn(run_the_temp_sensor(p.I2C0, p.PIN_5, p.PIN_4));
@@ -174,12 +261,19 @@ async fn main(spawner: Spawner) {
             continue;
         }
 
-        let now = rtc.now();
-        match now {
-            Ok(time) => set_display_time(time),
-            Err(_) => {
-                info!("Error getting time");
+        if time_was_set {
+            let now = rtc.now();
+            match now {
+                Ok(time) => set_display_time(time),
+                Err(_) => {
+                    info!("Error getting time");
+                }
             }
+        } else {
+            RTC_TIME_STRING.lock(|rtc_time_string| {
+                rtc_time_string.borrow_mut().clear();
+                rtc_time_string.borrow_mut().push_str("No Wifi").unwrap();
+            });
         }
 
         Timer::after(Duration::from_millis(100)).await;
@@ -216,4 +310,11 @@ fn set_display_time(time: DateTime) {
 #[embassy_executor::task]
 async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
+}
+
+#[derive(Deserialize)]
+struct TimeApiResponse<'a> {
+    datetime: &'a str,
+    day_of_week: u8,
+    // other fields as needed
 }
