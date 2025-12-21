@@ -102,6 +102,11 @@ postcard = "1.0.8"
 time = { version = "0.3.17", default-features = false }
 #pcf85063a = "0.1.1"
 
+[features]
+# 'default' features are enabled unless --no-default-features is used
+default = ["temp_sensor"]
+temp_sensor = []
+
 [profile.release]
 debug = 2
 
@@ -109,5 +114,3 @@ debug = 2
 debug = 2
 lto = true
 opt-level = "z"
-
-
